@@ -1,6 +1,11 @@
-import requests
-import duckdb
+import io
+import os
 from datetime import datetime
+
+import requests
+import pyarrow as pa
+import pyarrow.parquet as pq
+from b2sdk.v2 import InMemoryAccountInfo, B2Api
 
 
 BASE_URL = (
@@ -10,10 +15,19 @@ BASE_URL = (
 
 DATASET = "demo_pjan"
 
-COUNTRIES = ["BG", "RO", "EL"] # Bulgaria, Romania, Greece
+COUNTRIES = ["BG", "RO", "EL"]
 
+START_YEAR = 2023
 CURRENT_YEAR = datetime.now().year
-YEARS = [str(year) for year in range(2020, CURRENT_YEAR + 1)]
+
+YEARS = [
+    str(year)
+    for year in range(START_YEAR, CURRENT_YEAR + 1)
+]
+
+BUCKET_NAME = "balkan-merak-data"
+B2_FILE_NAME = "src/population/population.parquet"
+
 
 def get_population():
     url = f"{BASE_URL}/{DATASET}"
@@ -21,6 +35,8 @@ def get_population():
     params = {
         "geo": COUNTRIES,
         "time": YEARS,
+        "age": "TOTAL",
+        "sex": ["M", "F"],
         "lang": "en",
     }
 
@@ -46,7 +62,10 @@ def jsonstat_to_rows(data):
         category = data["dimension"][dimension]["category"]
         index = category["index"]
 
-        ordered_codes = sorted(index, key=index.get)
+        ordered_codes = sorted(
+            index,
+            key=index.get,
+        )
 
         categories[dimension] = ordered_codes
 
@@ -66,7 +85,10 @@ def jsonstat_to_rows(data):
 
         row = {}
 
-        for dimension, coordinate in zip(dimensions, coordinates):
+        for dimension, coordinate in zip(
+            dimensions,
+            coordinates,
+        ):
             row[dimension] = categories[dimension][coordinate]
 
         row["value"] = value
@@ -76,40 +98,73 @@ def jsonstat_to_rows(data):
     return rows
 
 
+def upload_to_b2(rows):
+    key_id = "003e898d12b7ec80000000001"
+    application_key = "K0035wTLYhQIG9rDcO+/obMFzm2mGT0"
+
+    info = InMemoryAccountInfo()
+    b2_api = B2Api(info)
+
+    b2_api.authorize_account(
+        "production",
+        key_id,
+        application_key,
+    )
+
+    bucket = b2_api.get_bucket_by_name(
+        BUCKET_NAME
+    )
+
+    # Convert rows to an Arrow table
+    table = pa.Table.from_pylist(rows)
+
+    # Create Parquet in memory
+    buffer = io.BytesIO()
+
+    pq.write_table(
+        table,
+        buffer,
+    )
+
+    # Get the Parquet bytes
+    data = buffer.getvalue()
+
+    # Upload directly to B2
+    bucket.upload_bytes(
+        data,
+        B2_FILE_NAME,
+    )
+
+    print()
+    print("=" * 60)
+    print("B2 UPLOAD SUCCESSFUL")
+    print("=" * 60)
+    print(f"Bucket: {BUCKET_NAME}")
+    print(f"Path:   {B2_FILE_NAME}")
+    print(f"Rows:   {len(rows)}")
+    print(f"Size:   {len(data):,} bytes")
+
+
 def main():
+    print("=" * 60)
+    print("EUROSTAT POPULATION INGESTION")
+    print("=" * 60)
+
+    print(f"Dataset:   {DATASET}")
+    print(f"Countries: {COUNTRIES}")
+    print(f"Years:     {YEARS}")
+
+    print()
+    print("Retrieving data from Eurostat...")
+
     data = get_population()
 
     rows = jsonstat_to_rows(data)
 
-    print("=" * 90)
-    print("EUROSTAT POPULATION")
-    print("=" * 90)
+    print(f"Retrieved {len(rows)} rows.")
 
-    print(
-        f"{'freq':<6}"
-        f"{'unit':<6}"
-        f"{'age':<10}"
-        f"{'sex':<6}"
-        f"{'geo':<6}"
-        f"{'time':<8}"
-        f"{'value':>15}"
-    )
+    upload_to_b2(rows)
 
-    print("-" * 90)
-
-    for row in rows[:20]:
-        print(
-            f"{row['freq']:<6}"
-            f"{row['unit']:<6}"
-            f"{row['age']:<10}"
-            f"{row['sex']:<6}"
-            f"{row['geo']:<6}"
-            f"{row['time']:<8}"
-            f"{row['value']:>15}"
-        )
-
-
-    
 
 if __name__ == "__main__":
     main()
