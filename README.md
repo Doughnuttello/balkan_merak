@@ -1,4 +1,4 @@
-# Balkan Trends — Architecture
+# Balkan Trends - Architecture
 
 ## 1. Purpose
 
